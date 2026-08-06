@@ -150,6 +150,44 @@ export default async function Page(){
         return error;
     }
 
+    // console.log('null and unddefined');
+    // console.log(typeof  null);
+    // console.log(typeof  undefined);
+    // console.log(null==undefined);
+    // console.log(null===undefined)
+    //
+
+    function createGame(){
+        let  score = 0;
+        function increaseScore(point:number){
+            console.log("increased point +",point);
+            return score += point;
+        }
+
+        function decreaseScore(point:number){
+            console.log("decreased point -",point);
+            return score -= point;
+        }
+
+        function getScore(){
+            console.log("Final score is ",score);
+            return score;
+        }
+        return {increaseScore, decreaseScore, getScore}
+    }
+
+    const game1 = createGame();
+    const game2 = createGame();
+
+    game1.increaseScore(3);
+    game2.increaseScore(2);
+    game1.decreaseScore(1);
+    game2.decreaseScore(3);
+    game1.getScore();
+    game2.getScore();
+
+
+
 
 
     return(
