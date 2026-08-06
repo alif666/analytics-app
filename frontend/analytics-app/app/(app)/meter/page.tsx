@@ -21,6 +21,8 @@ export default function MeterPage() {
   const [ratePerKwh, setRatePerKwh] = useState("12");
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [fileValid, setFileValid] = useState(false);
   const [error, setError] = useState("");
 
   const submit = async (event: FormEvent) => {
@@ -40,7 +42,20 @@ export default function MeterPage() {
     } finally { setLoading(false); }
   };
 
-  const onFileChange = (event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] || null);
+  const onFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0] || null;
+    setFile(selectedFile); setAnalytics(null); setError(""); setFileValid(false);
+    if (!selectedFile) return;
+    setValidating(true);
+    try {
+      const form = new FormData(); form.append("file", selectedFile);
+      await api.post("/meter/validate", form, { headers: { "Content-Type": "multipart/form-data" } });
+      setFileValid(true);
+    } catch (requestError: unknown) {
+      const errorResponse = requestError as { response?: { data?: { message?: string; detail?: string } }; message?: string };
+      setError(errorResponse.response?.data?.message || errorResponse.response?.data?.detail || errorResponse.message || "This file is not valid.");
+    } finally { setValidating(false); }
+  };
   const maximum = Math.max(...(analytics?.readings.map((row) => row.consumptionKwh) || [1]));
   const withinBudget = analytics && analytics.budgetVariancePerDay >= 0;
 
@@ -57,7 +72,7 @@ export default function MeterPage() {
       <form onSubmit={submit} className="grid gap-5 rounded-2xl border border-border bg-surface p-5 shadow-sm md:grid-cols-[1.5fr_1fr_1fr_auto] md:items-end">
         <label className="block text-sm font-semibold">CSV export
           <input className="mt-2 block w-full cursor-pointer rounded-xl border border-dashed border-slate-400 bg-surface-2 p-3 text-sm" type="file" accept=".csv,text/csv" onChange={onFileChange} />
-          <span className="mt-1 block text-xs font-normal text-muted">Date + usage columns required</span>
+          <span className={`mt-1 block text-xs font-normal ${fileValid ? "text-emerald-600" : "text-muted"}`}>{validating ? "Checking format and data..." : fileValid ? "CSV format is valid" : "Checked immediately after selection · Date + usage columns required"}</span>
         </label>
         <label className="block text-sm font-semibold">Daily budget
           <input className="mt-2 w-full rounded-xl border border-border bg-background px-3 py-3 outline-none focus:border-accent" type="number" min="0.01" step="0.01" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} />
@@ -67,7 +82,7 @@ export default function MeterPage() {
           <input className="mt-2 w-full rounded-xl border border-border bg-background px-3 py-3 outline-none focus:border-accent" type="number" min="0.01" step="0.01" value={ratePerKwh} onChange={(e) => setRatePerKwh(e.target.value)} />
           <span className="mt-1 block text-xs font-normal text-muted">Needed to convert cost to usage</span>
         </label>
-        <button disabled={loading} className="rounded-xl bg-accent px-5 py-3 font-semibold text-white transition hover:brightness-110 disabled:cursor-wait disabled:opacity-60" type="submit">{loading ? "Analysing..." : "Analyse CSV"}</button>
+        <button disabled={loading || validating || !fileValid} className="rounded-xl bg-accent px-5 py-3 font-semibold text-white transition hover:brightness-110 disabled:cursor-wait disabled:opacity-60" type="submit">{validating ? "Checking file..." : loading ? "Analysing..." : "Analyse CSV"}</button>
       </form>
       {error && <p className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</p>}
 

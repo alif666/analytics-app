@@ -23,7 +23,6 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.*;
-import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -36,10 +35,7 @@ public class MeterService {
 
     @Transactional
     public MeterAnalyticsDto upload(MultipartFile file, BigDecimal dailyBudget, BigDecimal ratePerKwh, String username) {
-        if (file == null || file.isEmpty() || file.getOriginalFilename() == null ||
-                !file.getOriginalFilename().toLowerCase(Locale.ROOT).endsWith(".csv")) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Please upload a non-empty CSV file");
-        }
+        validateFileType(file);
         validateInputs(dailyBudget, ratePerKwh);
         Map<LocalDate, BigDecimal> parsed = parse(file);
         try {
@@ -67,6 +63,11 @@ public class MeterService {
         }
     }
 
+    public void validateFile(MultipartFile file) {
+        validateFileType(file);
+        parse(file);
+    }
+
     @Transactional(readOnly = true)
     public MeterAnalyticsDto latest(BigDecimal dailyBudget, BigDecimal ratePerKwh, String username) {
         validateInputs(dailyBudget, ratePerKwh);
@@ -75,36 +76,119 @@ public class MeterService {
         return toDto(latest, dailyBudget, ratePerKwh);
     }
 
+    private static void validateFileType(MultipartFile file) {
+        if (file == null || file.isEmpty() || file.getOriginalFilename() == null ||
+                !file.getOriginalFilename().toLowerCase(Locale.ROOT).endsWith(".csv")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Please select a non-empty CSV file");
+        }
+    }
+
     private Map<LocalDate, BigDecimal> parse(MultipartFile file) {
         try (BufferedReader reader = new BufferedReader(new StringReader(new String(file.getBytes(), StandardCharsets.UTF_8)))) {
             String line;
-            int dateColumn = -1, usageColumn = -1;
+            int lineNumber = 0;
+            int dateColumn = -1, usageColumn = -1, unitColumn = -1;
+            boolean headerFound = false;
+            boolean summaryFound = false;
+            BigDecimal summaryTotal = null;
             Map<LocalDate, BigDecimal> result = new TreeMap<>();
+            List<String> errors = new ArrayList<>();
+
             while ((line = reader.readLine()) != null) {
+                lineNumber++;
                 List<String> cells = csvCells(line);
-                if (dateColumn < 0) {
-                    for (int i = 0; i < cells.size(); i++) {
-                        String header = normalize(cells.get(i));
-                        if (header.equals("date") || header.equals("reading date")) dateColumn = i;
-                        if (header.contains("totalusage") || header.equals("usage") || header.contains("consumption")) usageColumn = i;
+                boolean blank = cells.stream().allMatch(String::isBlank);
+                if (blank) continue;
+
+                if (!headerFound) {
+                    Map<String, Integer> headers = headerIndexes(cells);
+                    if (headers.containsKey("date") || headers.containsKey("totalusage") || headers.containsKey("usageuom")) {
+                        headerFound = true;
+                        dateColumn = headers.getOrDefault("date", -1);
+                        usageColumn = headers.getOrDefault("totalusage", headers.getOrDefault("usage", -1));
+                        unitColumn = headers.getOrDefault("usageuom", -1);
+                        if (dateColumn < 0) errors.add("Row " + lineNumber + ": required column 'Date' is missing");
+                        if (usageColumn < 0) errors.add("Row " + lineNumber + ": required column 'Total Usage' is missing");
+                        if (unitColumn < 0) errors.add("Row " + lineNumber + ": required column 'Usage UOM' is missing");
                     }
-                    if (dateColumn < 0 || usageColumn < 0) continue;
                     continue;
                 }
-                if (cells.size() <= Math.max(dateColumn, usageColumn)) continue;
+
+                if (summaryFound) {
+                    errors.add("Row " + lineNumber + ": data appears after the 'Total' summary row");
+                    continue;
+                }
+                if (cells.size() <= Math.max(dateColumn, Math.max(usageColumn, unitColumn))) {
+                    errors.add("Row " + lineNumber + ": expected Date, Total Usage, and Usage UOM values");
+                    continue;
+                }
+
+                String dateValue = cells.get(dateColumn).trim();
+                String usageValue = cells.get(usageColumn).trim().replace(",", "");
+                String unitValue = cells.get(unitColumn).trim();
+                if (normalize(dateValue).equals("total")) {
+                    summaryFound = true;
+                    try {
+                        summaryTotal = new BigDecimal(usageValue);
+                        if (summaryTotal.signum() < 0) errors.add("Row " + lineNumber + ": total usage cannot be negative");
+                    } catch (NumberFormatException ex) {
+                        errors.add("Row " + lineNumber + ": total usage must be a number");
+                    }
+                    if (!normalizeUnit(unitValue).equals("kwh")) errors.add("Row " + lineNumber + ": Usage UOM must be kWh");
+                    continue;
+                }
+
+                LocalDate date;
                 try {
-                    LocalDate date = parseDate(cells.get(dateColumn));
-                    BigDecimal usage = new BigDecimal(cells.get(usageColumn).replace(",", "").trim());
-                    if (usage.signum() >= 0) result.merge(date, usage, BigDecimal::add);
-                } catch (DateTimeParseException | NumberFormatException ignored) {
-                    // Metadata and summary rows are not meter readings.
+                    date = parseDate(dateValue);
+                } catch (DateTimeParseException ex) {
+                    errors.add("Row " + lineNumber + ": Date must use YYYY-MM-DD, DD/MM/YYYY, or DD-MMM-YYYY format");
+                    continue;
+                }
+                BigDecimal usage;
+                try {
+                    usage = new BigDecimal(usageValue);
+                } catch (NumberFormatException ex) {
+                    errors.add("Row " + lineNumber + ": Total Usage must be a number");
+                    continue;
+                }
+                if (usage.signum() < 0) errors.add("Row " + lineNumber + ": Total Usage cannot be negative");
+                if (!normalizeUnit(unitValue).equals("kwh")) errors.add("Row " + lineNumber + ": Usage UOM must be kWh");
+                if (result.containsKey(date)) errors.add("Row " + lineNumber + ": duplicate reading date " + dateValue);
+                else if (usage.signum() >= 0) result.put(date, usage);
+            }
+
+            if (!headerFound) errors.add("No meter table found. Expected a header row with Date, Total Usage, and Usage UOM");
+            if (result.isEmpty()) errors.add("At least one valid daily reading is required");
+            if (summaryTotal != null) {
+                BigDecimal readingTotal = result.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+                if (summaryTotal.subtract(readingTotal).abs().compareTo(new BigDecimal("0.01")) > 0) {
+                    errors.add("The Total summary does not match the sum of daily readings");
                 }
             }
-            if (result.isEmpty()) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "CSV must contain Date and Usage columns with at least one reading");
+            if (!errors.isEmpty()) throw validationError(errors);
             return result;
         } catch (IOException ex) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Could not read the CSV file", ex);
         }
+    }
+
+    private static Map<String, Integer> headerIndexes(List<String> cells) {
+        Map<String, Integer> headers = new HashMap<>();
+        for (int i = 0; i < cells.size(); i++) {
+            String header = normalize(cells.get(i));
+            if (header.equals("date") || header.equals("readingdate")) headers.put("date", i);
+            if (header.equals("totalusage") || header.startsWith("totalusage")) headers.put("totalusage", i);
+            if (header.equals("usage") || header.equals("consumption")) headers.put("usage", i);
+            if (header.equals("usageuom") || header.equals("unit")) headers.put("usageuom", i);
+        }
+        return headers;
+    }
+
+    private static ResponseStatusException validationError(List<String> errors) {
+        String detail = String.join(" | ", errors.size() > 12 ? errors.subList(0, 12) : errors);
+        if (errors.size() > 12) detail += " | Additional errors were omitted";
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST, "Meter CSV validation failed: " + detail);
     }
 
     private MeterAnalyticsDto toDto(MeterImport meterImport, BigDecimal budget, BigDecimal rate) {
@@ -127,7 +211,8 @@ public class MeterService {
         throw new DateTimeParseException("Invalid date", text, 0);
     }
     private static List<String> csvCells(String line) { List<String> cells = new ArrayList<>(); StringBuilder cell = new StringBuilder(); boolean quoted = false; for (int i=0;i<line.length();i++) { char c=line.charAt(i); if(c=='"') { if(quoted && i+1<line.length() && line.charAt(i+1)=='"'){cell.append('"');i++;} else quoted=!quoted; } else if(c==',' && !quoted){cells.add(cell.toString());cell.setLength(0);} else cell.append(c); } cells.add(cell.toString()); return cells; }
-    private static String normalize(String value) { return value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", "").replace("kwh", ""); }
+    private static String normalize(String value) { return value.replace("\uFEFF", "").toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", ""); }
+    private static String normalizeUnit(String value) { return value.replace("\uFEFF", "").toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]", ""); }
     private static BigDecimal money(BigDecimal value) { return value.setScale(2, RoundingMode.HALF_UP); }
     private static BigDecimal scale(BigDecimal value) { return value.setScale(3, RoundingMode.HALF_UP); }
     private static void validateInputs(BigDecimal budget, BigDecimal rate) { if (budget == null || rate == null || budget.signum() <= 0 || rate.signum() <= 0) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Daily budget and rate per kWh must be greater than zero"); }

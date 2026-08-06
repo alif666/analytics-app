@@ -15,6 +15,12 @@ import java.math.BigDecimal;
 public class MeterController {
     private final MeterService meterService;
 
+    @PostMapping(value = "/validate", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public java.util.Map<String, String> validate(@RequestPart("file") MultipartFile file) {
+        meterService.validateFile(file);
+        return java.util.Map.of("message", "CSV format and data are valid");
+    }
+
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public MeterAnalyticsDto upload(@RequestPart("file") MultipartFile file,
                                     @RequestParam BigDecimal dailyBudget,
