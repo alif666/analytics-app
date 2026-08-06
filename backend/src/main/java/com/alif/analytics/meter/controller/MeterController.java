@@ -16,8 +16,9 @@ public class MeterController {
     private final MeterService meterService;
 
     @PostMapping(value = "/validate", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public java.util.Map<String, String> validate(@RequestPart("file") MultipartFile file) {
-        meterService.validateFile(file);
+    public java.util.Map<String, String> validate(@RequestPart("file") MultipartFile file,
+                                                  org.springframework.security.core.Authentication authentication) {
+        meterService.validateFile(file, authentication.getName());
         return java.util.Map.of("message", "CSV format and data are valid");
     }
 

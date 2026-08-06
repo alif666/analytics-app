@@ -10,7 +10,9 @@ import java.time.LocalDate;
 @Getter
 @Setter
 @Entity
-@Table(name = "meter_readings", indexes = @Index(name = "idx_meter_reading_import_date", columnList = "meter_import_id,reading_date"))
+@Table(name = "meter_readings",
+        indexes = @Index(name = "idx_meter_reading_import_date", columnList = "meter_import_id,reading_date"),
+        uniqueConstraints = @UniqueConstraint(name = "uk_meter_reading_import_date", columnNames = {"meter_import_id", "reading_date"}))
 public class MeterReading {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

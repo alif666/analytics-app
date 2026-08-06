@@ -4,11 +4,13 @@ import com.alif.analytics.meter.dto.MeterAnalyticsDto;
 import com.alif.analytics.meter.entity.MeterImport;
 import com.alif.analytics.meter.entity.MeterReading;
 import com.alif.analytics.meter.repository.MeterImportRepository;
+import com.alif.analytics.meter.repository.MeterReadingRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -29,6 +31,7 @@ import java.util.*;
 public class MeterService {
     private static final DateTimeFormatter DISPLAY_DATE = DateTimeFormatter.ofPattern("d-MMM-uuuu", Locale.ENGLISH);
     private final MeterImportRepository importRepository;
+    private final MeterReadingRepository readingRepository;
 
     @Value("${analytics.meter.upload-directory:uploads/meter}")
     private String uploadDirectory;
@@ -38,6 +41,7 @@ public class MeterService {
         validateFileType(file);
         validateInputs(dailyBudget, ratePerKwh);
         Map<LocalDate, BigDecimal> parsed = parse(file);
+        validateExistingDates(parsed.keySet(), username);
         try {
             Path root = Paths.get(uploadDirectory).toAbsolutePath().normalize();
             Files.createDirectories(root);
@@ -57,15 +61,20 @@ public class MeterService {
                 reading.setConsumptionKwh(usage);
                 meterImport.getReadings().add(reading);
             });
-            return toDto(importRepository.save(meterImport), dailyBudget, ratePerKwh);
+            try {
+                return toDto(importRepository.saveAndFlush(meterImport), dailyBudget, ratePerKwh);
+            } catch (DataIntegrityViolationException ex) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Duplicate meter date detected; each date can appear only once", ex);
+            }
         } catch (IOException ex) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Could not store the uploaded CSV", ex);
         }
     }
 
-    public void validateFile(MultipartFile file) {
+    public void validateFile(MultipartFile file, String username) {
         validateFileType(file);
-        parse(file);
+        Map<LocalDate, BigDecimal> parsed = parse(file);
+        validateExistingDates(parsed.keySet(), username);
     }
 
     @Transactional(readOnly = true)
@@ -110,6 +119,7 @@ public class MeterService {
                         if (dateColumn < 0) errors.add("Row " + lineNumber + ": required column 'Date' is missing");
                         if (usageColumn < 0) errors.add("Row " + lineNumber + ": required column 'Total Usage' is missing");
                         if (unitColumn < 0) errors.add("Row " + lineNumber + ": required column 'Usage UOM' is missing");
+                        if (dateColumn < 0 || usageColumn < 0 || unitColumn < 0) continue;
                     }
                     continue;
                 }
@@ -179,7 +189,7 @@ public class MeterService {
             String header = normalize(cells.get(i));
             if (header.equals("date") || header.equals("readingdate")) headers.put("date", i);
             if (header.equals("totalusage") || header.startsWith("totalusage")) headers.put("totalusage", i);
-            if (header.equals("usage") || header.equals("consumption")) headers.put("usage", i);
+            if (header.equals("usage") || header.equals("value") || header.equals("consumption")) headers.put("usage", i);
             if (header.equals("usageuom") || header.equals("unit")) headers.put("usageuom", i);
         }
         return headers;
@@ -189,6 +199,17 @@ public class MeterService {
         String detail = String.join(" | ", errors.size() > 12 ? errors.subList(0, 12) : errors);
         if (errors.size() > 12) detail += " | Additional errors were omitted";
         return new ResponseStatusException(HttpStatus.BAD_REQUEST, "Meter CSV validation failed: " + detail);
+    }
+
+    private void validateExistingDates(Collection<LocalDate> dates, String username) {
+        if (dates.isEmpty()) return;
+        Set<LocalDate> existingDates = new TreeSet<>(readingRepository.findExistingDates(username, dates));
+        if (existingDates.isEmpty()) return;
+
+        String duplicateDates = existingDates.stream()
+                .map(LocalDate::toString)
+                .collect(java.util.stream.Collectors.joining(", "));
+        throw validationError(List.of("Reading already exists for date(s): " + duplicateDates));
     }
 
     private MeterAnalyticsDto toDto(MeterImport meterImport, BigDecimal budget, BigDecimal rate) {
