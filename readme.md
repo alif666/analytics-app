@@ -11,7 +11,7 @@ update the
 check the F:\alif\analytics-app\ backend and frontend part for  this
 
 
-#Feature 2 - There should be a backend analyzer to check if the format  of the file is fine or not. Check the excel file to understand the file format. This validation will work on fileupload. If It cannot validate file format or  data as required, It will give proper error so that I can fix the file and reupload
-#Feature 3 - No duplicate date will exist in server side for meter_readings
-
-1. 
+DONE Feature 2 - There should be a backend analyzer to check if the format  of the file is fine or not. Check the excel file to understand the file format. This validation will work on fileupload. If It cannot validate file format or  data as required, It will give proper error so that I can fix the file and reupload
+DONE Feature 3 - No duplicate date will exist in server side for meter_readings
+Feature 4 - Left and Top Bar UI update
+Feature 5 - Human readable Analytics that will serve the purpose
