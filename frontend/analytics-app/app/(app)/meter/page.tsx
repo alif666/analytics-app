@@ -1,106 +1,41 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useState } from "react";
+import { ChangeEvent, useEffect, useState } from "react";
 import api from "@/lib/api";
 
-type Reading = { date: string; consumptionKwh: number; cost: number; overBudget: boolean };
-type Analytics = {
-  importId: number; filename: string; readingCount: number; startDate: string; endDate: string;
-  totalKwh: number; averageDailyKwh: number; peakDailyKwh: number; peakDate: string;
-  minimumDailyKwh: number; dailyBudget: number; ratePerKwh: number; recommendedDailyKwh: number;
-  actualAverageDailyCost: number; projectedPeriodCost: number; budgetVariancePerDay: number;
-  readings: Reading[];
-};
-
-const money = (value: number) => value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const kwh = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 2 });
+type Monthly = { id?: number; month: number; year: number; totalUsage: number; usageUom: string; energyCharge: number; demandCharge: number; meterRent: number; vat: number; estimatedAmount: number; saved: boolean };
+const money = (v: number) => `৳${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const monthName = (month: number) => new Date(2000, month - 1, 1).toLocaleString(undefined, { month: "long" });
 
 export default function MeterPage() {
   const [file, setFile] = useState<File | null>(null);
-  const [dailyBudget, setDailyBudget] = useState("100");
-  const [ratePerKwh, setRatePerKwh] = useState("12");
-  const [analytics, setAnalytics] = useState<Analytics | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [validating, setValidating] = useState(false);
-  const [fileValid, setFileValid] = useState(false);
+  const [load, setLoad] = useState("7");
+  const [rows, setRows] = useState<Monthly[]>([]);
+  const [saved, setSaved] = useState<Monthly[]>([]);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!file) { setError("Choose a CSV file first."); return; }
-    setLoading(true); setError("");
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      form.append("dailyBudget", dailyBudget);
-      form.append("ratePerKwh", ratePerKwh);
-      const response = await api.post<Analytics>("/meter/upload", form, { headers: { "Content-Type": "multipart/form-data" } });
-      setAnalytics(response.data);
-    } catch (requestError: unknown) {
-      const errorResponse = requestError as { response?: { data?: { detail?: string; message?: string } }; message?: string };
-      setError(errorResponse.response?.data?.detail || errorResponse.response?.data?.message || errorResponse.message || "Upload failed.");
-    } finally { setLoading(false); }
+  useEffect(() => { api.get<Monthly[]>("/meter/monthly").then(r => setSaved(r.data)).catch(() => undefined); }, []);
+  const onFile = (e: ChangeEvent<HTMLInputElement>) => { setFile(e.target.files?.[0] || null); setRows([]); setError(""); };
+  const analyze = async () => {
+    if (!file) { setError("Choose a monthly CSV file first."); return; }
+    setBusy(true); setError("");
+    try { const form = new FormData(); form.append("file", file); form.append("sanctionedLoad", load); const result = await api.post<Monthly[]>("/meter/analyze", form, { headers: { "Content-Type": "multipart/form-data" } }); setRows(result.data); }
+    catch (e: unknown) { setError(message(e, "Analysis failed.")); } finally { setBusy(false); }
   };
-
-  const onFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = event.target.files?.[0] || null;
-    setFile(selectedFile); setAnalytics(null); setError(""); setFileValid(false);
-    if (!selectedFile) return;
-    setValidating(true);
-    try {
-      const form = new FormData(); form.append("file", selectedFile);
-      await api.post("/meter/validate", form, { headers: { "Content-Type": "multipart/form-data" } });
-      setFileValid(true);
-    } catch (requestError: unknown) {
-      const errorResponse = requestError as { response?: { data?: { message?: string; detail?: string } }; message?: string };
-      setError(errorResponse.response?.data?.message || errorResponse.response?.data?.detail || errorResponse.message || "This file is not valid.");
-    } finally { setValidating(false); }
+  const save = async (row: Monthly) => {
+    if (!file) return; setBusy(true); setError("");
+    try { const form = new FormData(); form.append("file", file); form.append("month", String(row.month)); form.append("year", String(row.year)); form.append("sanctionedLoad", load); const result = await api.post<Monthly>("/meter/save", form, { headers: { "Content-Type": "multipart/form-data" } }); setRows(current => current.map(r => r.month === row.month && r.year === row.year ? result.data : r)); setSaved(current => [result.data, ...current]); }
+    catch (e: unknown) { setError(message(e, "Could not save this month.")); } finally { setBusy(false); }
   };
-  const maximum = Math.max(...(analytics?.readings.map((row) => row.consumptionKwh) || [1]));
-  const withinBudget = analytics && analytics.budgetVariancePerDay >= 0;
-
-  return (
-    <div className="mx-auto max-w-7xl space-y-8">
-      <section className="meter-hero rounded-3xl p-7 text-white shadow-xl md:p-10">
-        <div className="max-w-2xl">
-          <p className="mb-3 text-xs font-bold uppercase tracking-[0.28em] text-teal-100">Meter intelligence</p>
-          <h1 className="text-3xl font-semibold tracking-tight md:text-5xl">Turn usage into a daily plan.</h1>
-          <p className="mt-4 max-w-xl text-sm leading-6 text-slate-200">Upload your meter export to see your real daily pattern, the kWh you can safely use each day, and exactly where cost is drifting above target.</p>
-        </div>
-      </section>
-
-      <form onSubmit={submit} className="grid gap-5 rounded-2xl border border-border bg-surface p-5 shadow-sm md:grid-cols-[1.5fr_1fr_1fr_auto] md:items-end">
-        <label className="block text-sm font-semibold">CSV export
-          <input className="mt-2 block w-full cursor-pointer rounded-xl border border-dashed border-slate-400 bg-surface-2 p-3 text-sm" type="file" accept=".csv,text/csv" onChange={onFileChange} />
-          <span className={`mt-1 block text-xs font-normal ${fileValid ? "text-emerald-600" : "text-muted"}`}>{validating ? "Checking format and data..." : fileValid ? "CSV format is valid" : "Checked immediately after selection · Date + usage columns required"}</span>
-        </label>
-        <label className="block text-sm font-semibold">Daily budget
-          <input className="mt-2 w-full rounded-xl border border-border bg-background px-3 py-3 outline-none focus:border-accent" type="number" min="0.01" step="0.01" value={dailyBudget} onChange={(e) => setDailyBudget(e.target.value)} />
-          <span className="mt-1 block text-xs font-normal text-muted">Your currency / day</span>
-        </label>
-        <label className="block text-sm font-semibold">Rate per kWh
-          <input className="mt-2 w-full rounded-xl border border-border bg-background px-3 py-3 outline-none focus:border-accent" type="number" min="0.01" step="0.01" value={ratePerKwh} onChange={(e) => setRatePerKwh(e.target.value)} />
-          <span className="mt-1 block text-xs font-normal text-muted">Needed to convert cost to usage</span>
-        </label>
-        <button disabled={loading || validating || !fileValid} className="rounded-xl bg-accent px-5 py-3 font-semibold text-white transition hover:brightness-110 disabled:cursor-wait disabled:opacity-60" type="submit">{validating ? "Checking file..." : loading ? "Analysing..." : "Analyse CSV"}</button>
-      </form>
-      {error && <p className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</p>}
-
-      {analytics && <>
-        <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[0.2em] text-accent">Latest analysis</p><h2 className="mt-1 text-2xl font-semibold">{analytics.filename}</h2></div><p className="text-sm text-muted">{analytics.startDate} to {analytics.endDate} · {analytics.readingCount} days</p></div>
-        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <Metric label="Recommended per day" value={`${kwh(analytics.recommendedDailyKwh)} kWh`} note={`Keeps cost at ${money(analytics.dailyBudget)} / day`} featured />
-          <Metric label="Your average" value={`${kwh(analytics.averageDailyKwh)} kWh`} note={`${money(analytics.actualAverageDailyCost)} average daily cost`} />
-          <Metric label="Total consumption" value={`${kwh(analytics.totalKwh)} kWh`} note={`${money(analytics.projectedPeriodCost)} across this period`} />
-          <Metric label="Peak day" value={`${kwh(analytics.peakDailyKwh)} kWh`} note={analytics.peakDate} />
-        </section>
-        <section className="grid gap-5 xl:grid-cols-[1.5fr_1fr]">
-          <div className="rounded-2xl border border-border bg-surface p-5 shadow-sm"><div className="mb-6 flex items-center justify-between"><div><h3 className="font-semibold">Daily usage</h3><p className="text-sm text-muted">Red bars exceed the daily budget</p></div><span className={`rounded-full px-3 py-1 text-xs font-bold ${withinBudget ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-700"}`}>{withinBudget ? "On target" : "Needs attention"}</span></div><div className="space-y-3">{analytics.readings.map((row) => <div key={row.date} className="grid grid-cols-[72px_1fr_70px] items-center gap-3 text-sm"><span className="text-muted">{new Date(`${row.date}T00:00:00`).toLocaleDateString(undefined, { day: "2-digit", month: "short" })}</span><div className="h-7 overflow-hidden rounded-md bg-surface-2"><div className={`h-full rounded-md ${row.overBudget ? "bg-orange-400" : "bg-teal-500"}`} style={{ width: `${Math.max(3, (row.consumptionKwh / maximum) * 100)}%` }} /></div><span className="text-right font-medium">{kwh(row.consumptionKwh)}</span></div>)}</div></div>
-          <div className="space-y-5"><div className="rounded-2xl bg-slate-900 p-6 text-white shadow-sm"><p className="text-xs font-bold uppercase tracking-[0.2em] text-teal-300">Your daily guardrail</p><p className="mt-4 text-4xl font-semibold">{kwh(analytics.recommendedDailyKwh)} <span className="text-base font-normal text-slate-300">kWh / day</span></p><p className="mt-3 text-sm leading-6 text-slate-300">At {money(analytics.ratePerKwh)} per kWh, staying under this level keeps you within your {money(analytics.dailyBudget)} daily target.</p></div><div className="rounded-2xl border border-border bg-surface p-6"><h3 className="font-semibold">What to do next</h3><p className="mt-3 text-sm leading-6 text-muted">{withinBudget ? `You are averaging ${money(Math.abs(analytics.budgetVariancePerDay))} under budget each day. Keep your usage below the guardrail.` : `You are averaging ${money(Math.abs(analytics.budgetVariancePerDay))} over budget each day. Shift heavy loads away from peak days and aim for the guardrail.`}</p><div className="mt-5 grid grid-cols-2 gap-3 text-sm"><div className="rounded-xl bg-surface-2 p-3"><span className="block text-xs text-muted">Lowest day</span><strong>{kwh(analytics.minimumDailyKwh)} kWh</strong></div><div className="rounded-xl bg-surface-2 p-3"><span className="block text-xs text-muted">Rate used</span><strong>{money(analytics.ratePerKwh)} / kWh</strong></div></div></div></div>
-        </section>
-      </>}
-    </div>
-  );
+  const alreadySaved = (row: Monthly) => saved.some(s => s.month === row.month && s.year === row.year);
+  return <div className="mx-auto max-w-7xl space-y-8">
+    <section className="meter-hero rounded-3xl p-7 text-white shadow-xl md:p-10"><p className="mb-3 text-xs font-bold uppercase tracking-[0.28em] text-teal-100">Meter intelligence</p><h1 className="text-3xl font-semibold tracking-tight md:text-5xl">Understand your monthly electricity cost.</h1><p className="mt-4 max-w-2xl text-sm leading-6 text-slate-200">Analyze a monthly export to calculate progressive LT-A residential charges. Analysis is temporary until you save an individual month.</p></section>
+    <section className="grid gap-5 rounded-2xl border border-border bg-surface p-5 shadow-sm md:grid-cols-[1.5fr_1fr_auto] md:items-end"><label className="block text-sm font-semibold">Monthly CSV<input className="mt-2 block w-full cursor-pointer rounded-xl border border-dashed border-slate-400 bg-surface-2 p-3 text-sm" type="file" accept=".csv,text/csv" onChange={onFile}/><span className="mt-1 block text-xs font-normal text-muted">Required columns: Month, Year, Total Usage, Usage UOM</span></label><label className="block text-sm font-semibold">Sanctioned load (kW)<input className="mt-2 w-full rounded-xl border border-border bg-background px-3 py-3" type="number" min="0.01" step="0.01" value={load} onChange={e => setLoad(e.target.value)}/><span className="mt-1 block text-xs font-normal text-muted">Used for the demand charge</span></label><button onClick={analyze} disabled={busy} className="rounded-xl bg-accent px-5 py-3 font-semibold text-white disabled:opacity-60">{busy ? "Working..." : "Analyze"}</button></section>
+    {error && <p className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</p>}
+    {rows.length > 0 && <section className="rounded-2xl border border-border bg-surface p-5 shadow-sm"><h2 className="text-2xl font-semibold">Analysis result</h2><p className="mt-1 text-sm text-muted">Each row is calculated independently. Save only the months you want associated with your account.</p><div className="mt-5 overflow-x-auto"><table className="w-full min-w-[760px] text-left text-sm"><thead><tr className="border-b border-border text-muted"><th className="p-3">Month</th><th className="p-3">Usage</th><th className="p-3">Energy</th><th className="p-3">Demand</th><th className="p-3">VAT</th><th className="p-3">Estimated amount</th><th className="p-3">Save</th></tr></thead><tbody>{rows.map(row => <tr key={`${row.year}-${row.month}`} className="border-b border-border"><td className="p-3 font-medium">{monthName(row.month)} {row.year}</td><td className="p-3">{row.totalUsage.toLocaleString()} {row.usageUom}</td><td className="p-3">{money(row.energyCharge)}</td><td className="p-3">{money(row.demandCharge)}</td><td className="p-3">{money(row.vat)}</td><td className="p-3 font-semibold">{money(row.estimatedAmount)}</td><td className="p-3"><button disabled={busy || row.saved || alreadySaved(row)} onClick={() => save(row)} className="rounded-lg bg-slate-900 px-3 py-2 text-white disabled:cursor-not-allowed disabled:bg-slate-300">{row.saved || alreadySaved(row) ? "Saved" : "Save"}</button></td></tr>)}</tbody></table></div></section>}
+    <section className="rounded-2xl border border-border bg-surface p-5 shadow-sm"><h2 className="text-2xl font-semibold">Saved monthly usage</h2>{saved.length === 0 ? <p className="mt-2 text-sm text-muted">No saved months yet.</p> : <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{saved.map(row => <div key={row.id} className="rounded-xl bg-surface-2 p-4"><p className="font-semibold">{monthName(row.month)} {row.year}</p><p className="mt-2 text-sm text-muted">{row.totalUsage.toLocaleString()} {row.usageUom}</p><p className="mt-1 text-lg font-semibold">{money(row.estimatedAmount)}</p></div>)}</div>}</section>
+  </div>;
 }
 
-function Metric({ label, value, note, featured }: { label: string; value: string; note: string; featured?: boolean }) { return <div className={`rounded-2xl border p-5 shadow-sm ${featured ? "border-teal-200 bg-teal-50" : "border-border bg-surface"}`}><p className="text-xs font-bold uppercase tracking-[0.12em] text-muted">{label}</p><p className="mt-3 text-2xl font-semibold">{value}</p><p className="mt-2 text-xs text-muted">{note}</p></div>; }
+function message(error: unknown, fallback: string) { const e = error as { response?: { data?: { detail?: string; message?: string } }; message?: string }; return e.response?.data?.detail || e.response?.data?.message || e.message || fallback; }

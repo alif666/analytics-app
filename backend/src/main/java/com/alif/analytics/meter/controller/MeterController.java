@@ -1,39 +1,37 @@
 package com.alif.analytics.meter.controller;
 
-import com.alif.analytics.meter.dto.MeterAnalyticsDto;
-import com.alif.analytics.meter.service.MeterService;
+import com.alif.analytics.meter.dto.MonthlyUsageDto;
+import com.alif.analytics.meter.service.IMeterService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
-
 import java.math.BigDecimal;
+import java.util.List;
 
 @RestController
 @RequestMapping("/meter")
 @RequiredArgsConstructor
 public class MeterController {
-    private final MeterService meterService;
+    private final IMeterService meterService;
 
-    @PostMapping(value = "/validate", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public java.util.Map<String, String> validate(@RequestPart("file") MultipartFile file,
-                                                  org.springframework.security.core.Authentication authentication) {
-        meterService.validateFile(file, authentication.getName());
-        return java.util.Map.of("message", "CSV format and data are valid");
+    @PostMapping(value = "/analyze", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public List<MonthlyUsageDto> analyze(@RequestPart("file") MultipartFile file,
+                                         @RequestParam(defaultValue = "7") BigDecimal sanctionedLoad) {
+        return meterService.analyze(file, sanctionedLoad);
     }
 
-    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public MeterAnalyticsDto upload(@RequestPart("file") MultipartFile file,
-                                    @RequestParam BigDecimal dailyBudget,
-                                    @RequestParam BigDecimal ratePerKwh,
-                                    org.springframework.security.core.Authentication authentication) {
-        return meterService.upload(file, dailyBudget, ratePerKwh, authentication.getName());
+    @PostMapping(value = "/save", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public MonthlyUsageDto save(@RequestPart("file") MultipartFile file,
+                                @RequestParam int month, @RequestParam int year,
+                                @RequestParam(defaultValue = "7") BigDecimal sanctionedLoad,
+                                Authentication authentication) {
+        return meterService.save(file, month, year, sanctionedLoad, authentication.getName());
     }
 
-    @GetMapping("/latest")
-    public MeterAnalyticsDto latest(@RequestParam BigDecimal dailyBudget,
-                                    @RequestParam BigDecimal ratePerKwh,
-                                    org.springframework.security.core.Authentication authentication) {
-        return meterService.latest(dailyBudget, ratePerKwh, authentication.getName());
+    @GetMapping("/monthly")
+    public List<MonthlyUsageDto> monthly(Authentication authentication) {
+        return meterService.monthly(authentication.getName());
     }
 }
